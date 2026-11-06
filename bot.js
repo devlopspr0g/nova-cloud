@@ -1,25 +1,39 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
-const qrcode = require('qrcode-terminal');
-const fetch = require('node-fetch');
-const API = "https://aibridge-api-render.onrender.com";
-async function start() {
-  const { state, saveCreds } = await useMultiFileAuthState('auth');
-  const sock = makeWASocket({ auth: state });
-  sock.ev.on('creds.update', saveCreds);
-  sock.ev.on('connection.update', u => {
-    if(u.qr) qrcode.generate(u.qr,{small:true});
-    if(u.connection==='open') console.log("🤫 SILENT - NO REPLIES, GROUPS BLOCKED");
-    if(u.connection==='close' && u.lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) start();
-  });
-  sock.ev.on('messages.upsert', async ({messages}) => {
-    const msg = messages[0];
-    if(!msg.message || msg.key.fromMe) return;
-    const jid = msg.key.remoteJid || "";
-    if(jid.includes("@g.us") || jid.includes("status@broadcast")) { console.log("Blocked group/status:", jid); return; }
-    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-    if(!text) return;
-    console.log("[Saved only, NO reply] ", text);
-    try{ await fetch(`${API}/api/`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text})}); }catch(e){}
-  });
+const { default: makeWASocket, useMultiFileAuthState } = require("@whiskeysockets/baileys")
+const qrcode = require("qrcode")
+const express = require("express")
+const app = express()
+let qrImage = ""
+
+async function startBot() {
+    const { state, saveCreds } = await useMultiFileAuthState("auth")
+    const sock = makeWASocket({ auth: state, printQRInTerminal: true })
+
+    sock.ev.on("creds.update", saveCreds)
+
+    sock.ev.on("connection.update", async (update) => {
+        const { connection, qr } = update
+        if (qr) {
+            qrImage = await qrcode.toDataURL(qr)
+            console.log("QR Generated - Open your Render URL to scan!")
+        }
+        if (connection === "open") {
+            console.log("🤫 SILENT - NO REPLIES, GROUPS BLOCKED - 24/7 ONLINE!")
+            qrImage = ""
+        }
+    })
+
+    sock.ev.on("messages.upsert", async () => {
+        // SILENT - does nothing, just learns
+    })
 }
-start();
+
+app.get("/", (req, res) => {
+    if (qrImage) {
+        res.send(`<center><h2>Scan this QR with WhatsApp</h2><img src="${qrImage}" width="300"><br><br><a href="/">Refresh</a></center>`)
+    } else {
+        res.send("<center><h2>🤫 NOVA is Online 24/7!</h2><p>If you need QR, restart service in Render</p></center>")
+    }
+})
+
+app.listen(3000, () => console.log("Web server on 3000"))
+startBot()
