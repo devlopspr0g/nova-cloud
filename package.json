@@ -1,0 +1,13 @@
+{
+  "name": "nova-cloud",
+  "version": "1.0.0",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "node-fetch": "^2.6.7",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
