@@ -7,27 +7,17 @@ import pino from 'pino'
 
 const app = express()
 const PORT = process.env.PORT || 10000
-
-let latestQR = null
+let pairingCode = null
 let connectionStatus = 'Starting...'
 
-app.get('/', (req,res) => res.send(`<h1>Nova Cloud: ${connectionStatus}</h1><a href='/qr'>Go to /qr to scan</a>`))
+app.get('/', (req,res) => res.send(`<h1>${connectionStatus}</h1><a href='/qr'>Get Pairing Code</a>`))
 
 app.get('/qr', (req, res) => {
-  if (!latestQR) {
-    return res.send(`<h1>${connectionStatus}</h1><p>No QR yet. If connected, you don't need QR. If not, wait 10 sec and refresh.</p><script>setTimeout(()=>location.reload(),3000)</script>`)
+  if (pairingCode) {
+    res.send(`<html><body style="text-align:center;font-family:sans-serif;padding:30px"><h1>Your Pairing Code</h1><h2 style="font-size:50px;letter-spacing:5px;background:#000;color:#fff;padding:20px">${pairingCode}</h2><p>WhatsApp > Settings > Linked Devices > Link a Device > Link with phone number instead</p><p>Paste this code</p><p>Status: ${connectionStatus}</p></body></html>`)
+  } else {
+    res.send(`<h1>${connectionStatus}</h1><p>No code yet, wait 5 sec and refresh</p><script>setTimeout(()=>location.reload(),3000)</script>`)
   }
-  const qrImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(latestQR)}`
-  res.send(`
-    <html><body style="text-align:center; font-family:sans-serif; padding:20px">
-    <h1>Scan Nova Cloud QR</h1>
-    <p>Open WhatsApp > Linked Devices > Link a Device</p>
-    <img src="${qrImageUrl}" style="border:10px solid black" />
-    <p>This QR refreshes every 20 sec - keep refreshing if it expires</p>
-    <script>setTimeout(()=>location.reload(),20000)</script>
-    <p>Status: ${connectionStatus}</p>
-    </body></html>
-  `)
 })
 
 app.listen(PORT, () => console.log('Server on', PORT))
@@ -35,18 +25,13 @@ app.listen(PORT, () => console.log('Server on', PORT))
 const AUTH_DIR = './auth_info_baileys'
 
 async function restoreFromSupabase() {
-  console.log('Restoring session...')
   if (fs.existsSync(AUTH_DIR)) fs.rmSync(AUTH_DIR, { recursive: true, force: true })
   fs.mkdirSync(AUTH_DIR, { recursive: true })
   const { data } = await supabase.from('nova_auth').select('*')
-  if (!data || data.length === 0) { console.log('No session'); return }
+  if (!data || data.length === 0) return
   for (const row of data) {
-    const filePath = path.join(AUTH_DIR, row.id)
-    try {
-      fs.writeFileSync(filePath, typeof row.data === 'object' ? JSON.stringify(row.data) : row.data)
-    } catch {}
+    fs.writeFileSync(path.join(AUTH_DIR, row.id), typeof row.data === 'object' ? JSON.stringify(row.data) : row.data)
   }
-  console.log(`Restored ${data.length} files`)
 }
 
 async function saveToSupabase() {
@@ -57,7 +42,6 @@ async function saveToSupabase() {
       let toSave; try { toSave = JSON.parse(raw) } catch { toSave = raw }
       await supabase.from('nova_auth').upsert({ id: file, data: toSave, updated_at: new Date().toISOString() })
     }
-    console.log('Session saved!')
   } catch {}
 }
 
@@ -73,26 +57,29 @@ async function startNova() {
     browser: ['Nova Cloud', 'Chrome', '1.0']
   })
 
-  sock.ev.on('creds.update', async () => {
-    await saveCreds()
-    await saveToSupabase()
-  })
+  if (!sock.authState.creds.registered) {
+    const phoneNumber = '2348137981597' // <-- CHANGE TO YOUR WHATSAPP NUMBER WITH COUNTRY CODE, NO +
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(phoneNumber)
+        pairingCode = code
+        connectionStatus = `Pairing code: ${code}`
+        console.log('PAIRING CODE:', code)
+      } catch(e){ console.log('Pair code error', e.message) }
+    }, 3000)
+  }
+
+  sock.ev.on('creds.update', async () => { await saveCreds(); await saveToSupabase() })
 
   sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update
-    if (qr) {
-      latestQR = qr
-      connectionStatus = 'QR Ready - Scan at /qr'
-      console.log('QR ready - open /qr page')
-    }
+    const { connection, lastDisconnect } = update
     if (connection === 'open') {
-      latestQR = null
+      pairingCode = null
       connectionStatus = 'ONLINE PERSISTENT ✅'
-      console.log('NOVA ONLINE PERSISTENT!')
+      console.log('NOVA ONLINE!')
     }
     if (connection === 'close') {
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
-      connectionStatus = 'Reconnecting...'
       if (shouldReconnect) setTimeout(startNova, 3000)
     }
   })
@@ -102,9 +89,8 @@ async function startNova() {
     if (!msg.message || msg.key.fromMe) return
     const from = msg.key.remoteJid
     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
-    console.log(`Msg from ${from}: ${text}`)
     if (text.toLowerCase().trim() === 'ping') {
-      await sock.sendMessage(from, { text: 'Nova Cloud PONG ✅ PERSISTENT ONLINE' })
+      await sock.sendMessage(from, { text: 'Nova Cloud PONG ✅' })
     }
   })
 }
