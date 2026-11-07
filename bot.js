@@ -15,6 +15,10 @@ const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY
 const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KEY) : null
 
 const AUTH_DIR = "auth"
+if(process.env.CLEAR_AUTH === "true"){
+  if(fs.existsSync(AUTH_DIR)) fs.rmSync(AUTH_DIR, {recursive:true, force:true})
+  console.log("CLEARED AUTH FOLDER")
+}
 if(!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR)
 
 async function loadAuthFromSupabase(){
