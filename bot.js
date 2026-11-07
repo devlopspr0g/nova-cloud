@@ -76,19 +76,28 @@ async function startBot() {
         for(const f of files) await saveAuthToSupabase(f)
     })
 
-    sock.ev.on("connection.update", async (u) => {
+        sock.ev.on("connection.update", async (u) => {
         if (u.qr) {
             qrImage = await qrcode.toDataURL(u.qr)
             console.log("QR READY - OPEN RENDER URL!")
         }
         if (u.connection === "open") {
-            console.log("NOVA ONLINE PERSISTENT!")
+            console.log("🤫 NOVA ONLINE PERSISTENT - NO MORE SCAN EVER!")
             qrImage = ""
             const mems = await novaRecall()
             console.log(`Loaded ${mems.length} memories`)
         }
+        if (u.connection === "close") {
+            const shouldReconnect = u.lastDisconnect?.error?.output?.statusCode !== 401
+            console.log("Connection closed, restarting...", u.lastDisconnect?.error?.message)
+            if(shouldReconnect){
+                setTimeout(()=>startBot(), 2000)
+            } else {
+                console.log("401 Logged out - need new QR")
+                qrImage = ""
+            }
+        }
     })
-
     sock.ev.on("messages.upsert", async (m) => {
         try {
           const msg = m.messages[0]
