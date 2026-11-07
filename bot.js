@@ -4,11 +4,10 @@ import express from 'express'
 import fs from 'fs'
 import path from 'path'
 import pino from 'pino'
-import qrcode from 'qrcode-terminal'
 
 const app = express()
 const PORT = process.env.PORT || 10000
-app.get('/', (req,res) => res.send('Nova Cloud ONLINE - Scan QR in logs if needed'))
+app.get('/', (req,res) => res.send('Nova Cloud ONLINE - Waiting for QR'))
 app.listen(PORT, () => console.log('Server on', PORT))
 
 const AUTH_DIR = './auth_info_baileys'
@@ -20,7 +19,7 @@ async function restoreFromSupabase() {
   
   const { data, error } = await supabase.from('nova_auth').select('*')
   if (error || !data || data.length === 0) { 
-    console.log('No session found - will need QR scan'); 
+    console.log('No session found - will generate QR'); 
     return 
   }
   
@@ -35,13 +34,17 @@ async function restoreFromSupabase() {
 }
 
 async function saveToSupabase() {
-  const files = fs.readdirSync(AUTH_DIR)
-  for (const file of files) {
-    const raw = fs.readFileSync(path.join(AUTH_DIR, file), 'utf8')
-    let toSave; try { toSave = JSON.parse(raw) } catch { toSave = raw }
-    await supabase.from('nova_auth').upsert({ id: file, data: toSave, updated_at: new Date().toISOString() })
+  try {
+    const files = fs.readdirSync(AUTH_DIR)
+    for (const file of files) {
+      const raw = fs.readFileSync(path.join(AUTH_DIR, file), 'utf8')
+      let toSave; try { toSave = JSON.parse(raw) } catch { toSave = raw }
+      await supabase.from('nova_auth').upsert({ id: file, data: toSave, updated_at: new Date().toISOString() })
+    }
+    console.log('Session saved to Supabase!')
+  } catch (e) {
+    console.log('Save error', e.message)
   }
-  console.log('Session saved!')
 }
 
 async function startNova() {
@@ -64,15 +67,22 @@ async function startNova() {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update
     if (qr) {
-      console.log('SCAN THIS QR WITH WHATSAPP:')
-      qrcode.generate(qr, { small: true })
+      console.log('=== SCAN QR BELOW ===')
+      console.log(qr)
+      console.log('=== COPY ABOVE QR STRING TO: https://wa-qrcode-generator.netlify.app/ ===')
     }
-    if (connection === 'open') console.log('NOVA ONLINE PERSISTENT - Connected!')
+    if (connection === 'open') {
+      console.log('NOVA ONLINE PERSISTENT - Connected!')
+    }
     if (connection === 'close') {
-      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
-      console.log('Closed:', lastDisconnect?.error?.message, 'Reconnect?', shouldReconnect)
-      if (shouldReconnect) setTimeout(startNova, 3000)
-      else console.log('Logged out - delete nova_auth table and rescan')
+      const status = lastDisconnect?.error?.output?.statusCode
+      const shouldReconnect = status !== DisconnectReason.loggedOut
+      console.log('Connection closed, code:', status, 'Reconnect:', shouldReconnect)
+      if (shouldReconnect) {
+        setTimeout(startNova, 3000)
+      } else {
+        console.log('LOGGED OUT - Run DELETE FROM nova_auth in Supabase')
+      }
     }
   })
 
@@ -81,7 +91,7 @@ async function startNova() {
     if (!msg.message || msg.key.fromMe) return
     const from = msg.key.remoteJid
     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
-    console.log(`Msg from ${from}: ${text}`)
+    console.log(`Message from ${from}: ${text}`)
     if (text.toLowerCase().trim() === 'ping') {
       await sock.sendMessage(from, { text: 'Nova Cloud PONG ✅ PERSISTENT ONLINE' })
     }
