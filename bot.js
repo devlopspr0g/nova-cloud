@@ -1,119 +1,123 @@
-const { default: makeWASocket, useMultiFileAuthState, BufferJSON } = require("@whiskeysockets/baileys")
-const qrcode = require("qrcode")
-const express = require("express")
-const { createClient } = require("@supabase/supabase-js")
-const fs = require("fs")
-const path = require("path")
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys'
+import { supabase } from './supabase.js'
+import express from 'express'
+import fs from 'fs'
+import path from 'path'
+import QRCode from 'qrcode'
+import pino from 'pino'
 
+const AUTH_DIR = './auth'
+const PORT = process.env.PORT || 10000
+if (!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR, { recursive: true })
+
+let qrCodeData = null
 const app = express()
-let qrImage = ""
-
-const MEMORY_API = "https://aibridge-api-render-1.onrender.com"
-const API_KEY = process.env.NOVA_API_KEY || process.env.API_KEY || ""
-const SUPABASE_URL = process.env.SUPABASE_URL
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY
-const supabase = SUPABASE_URL && SUPABASE_KEY ? createClient(SUPABASE_URL, SUPABASE_KEY) : null
-
-const AUTH_DIR = "auth"
-if(process.env.CLEAR_AUTH === "true"){
-  if(fs.existsSync(AUTH_DIR)) fs.rmSync(AUTH_DIR, {recursive:true, force:true})
-  console.log("CLEARED AUTH FOLDER")
-}
-if(!fs.existsSync(AUTH_DIR)) fs.mkdirSync(AUTH_DIR)
-
-async function loadAuthFromSupabase(){
-  if(!supabase) return console.log("No Supabase env - running ephemeral")
-  console.log("Restoring session from Supabase...")
-  const { data } = await supabase.from("nova_auth").select("*")
-  if(!data || data.length===0) return console.log("No saved session yet")
-  for(const row of data){
-    const filePath = path.join(AUTH_DIR, row.id)
-    fs.writeFileSync(filePath, JSON.stringify(row.data, BufferJSON.replacer))
-  }
-  console.log(`Restored ${data.length} files`)
-}
-
-async function saveAuthToSupabase(filename){
-  if(!supabase) return
-  try{
-    const filePath = path.join(AUTH_DIR, filename)
-    if(!fs.existsSync(filePath)) return
-    const content = JSON.parse(fs.readFileSync(filePath, "utf-8"), BufferJSON.reviver)
-    await supabase.from("nova_auth").upsert({ id: filename, data: content })
-    console.log("Saved:", filename)
-  }catch(e){ console.log("SB save fail", e.message) }
-}
-
-async function novaRemember(content) {
-  try {
-    if (!API_KEY) return
-    await fetch(`${MEMORY_API}/api/memories`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
-      body: JSON.stringify({ content, source: "whatsapp", type: "memory", tags: ["nova"] })
-    })
-    console.log("Remembered:", content.slice(0,60))
-  } catch (e) {}
-}
-
-async function novaRecall(q="") {
-  try {
-    const url = q ? `${MEMORY_API}/api/memories?q=${encodeURIComponent(q)}` : `${MEMORY_API}/api/memories`
-    const r = await fetch(url, { headers: { "x-api-key": API_KEY } })
-    const d = await r.json()
-    return Array.isArray(d) ? d : []
-  } catch(e){ return [] }
-}
-
-async function startBot() {
-    await loadAuthFromSupabase()
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
-    const sock = makeWASocket({ auth: state, printQRInTerminal: true })
-
-    sock.ev.on("creds.update", async () => {
-        await saveCreds()
-        const files = fs.readdirSync(AUTH_DIR)
-        for(const f of files) await saveAuthToSupabase(f)
-    })
-
-        sock.ev.on("connection.update", async (u) => {
-        if (u.qr) {
-            qrImage = await qrcode.toDataURL(u.qr)
-            console.log("QR READY - OPEN RENDER URL!")
-        }
-        if (u.connection === "open") {
-            console.log("🤫 NOVA ONLINE PERSISTENT - NO MORE SCAN EVER!")
-            qrImage = ""
-            const mems = await novaRecall()
-            console.log(`Loaded ${mems.length} memories`)
-        }
-        if (u.connection === "close") {
-            const shouldReconnect = u.lastDisconnect?.error?.output?.statusCode !== 401
-            console.log("Connection closed, restarting...", u.lastDisconnect?.error?.message)
-            if(shouldReconnect){
-                setTimeout(()=>startBot(), 2000)
-            } else {
-                console.log("401 Logged out - need new QR")
-                qrImage = ""
-            }
-        }
-    })
-    sock.ev.on("messages.upsert", async (m) => {
-        try {
-          const msg = m.messages[0]
-          if (!msg.message) return
-          const text = msg.message.conversation || msg.message.extendedTextMessage?.text || ""
-          if (!text || msg.key.fromMe) return
-          if (msg.key.remoteJid.endsWith("@g.us")) return
-          await novaRemember(text)
-        } catch(e){}
-    })
-}
-
-app.get("/", (req,res)=>{
-    if(qrImage) res.send(`<center><h2>SCAN NOW - LAST TIME</h2><img src="${qrImage}" width="300"><br><a href="/">Refresh</a></center>`)
-    else res.send("<center><h2>NOVA ONLINE PERSISTENT 24/7</h2><p>Memory connected</p></center>")
+app.get('/', async (req, res) => {
+  if (!qrCodeData) return res.send('<h2>NOVA ONLINE PERSISTENT ✅ - No QR needed</h2>')
+  const qrImg = await QRCode.toDataURL(qrCodeData)
+  res.send(`<div style="text-align:center;padding:20px"><h1>Scan Nova QR - 15 sec only!</h1><img src="${qrImg}" width="300"/><p>Open WhatsApp 2348137981597 > Linked Devices > Link a device</p></div>`)
 })
+app.listen(PORT, () => console.log(`QR Server on ${PORT}`))
 
-app.listen(3000, ()=>console.log("Web server on 3000"))
-startBot()
+// RESTORE FROM SUPABASE
+async function restoreAuth() {
+  console.log('Restoring session from Supabase...')
+  const { data, error } = await supabase.from('nova_auth').select('*')
+  if (error || !data || data.length === 0) {
+    console.log('No saved session found, need QR')
+    return
+  }
+  for (const row of data) {
+    const filePath = path.join(AUTH_DIR, row.id)
+    const dir = path.dirname(filePath)
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(filePath, Buffer.from(row.data.content, 'base64'))
+  }
+  console.log(`Restored ${data.length} files from Supabase`)
+}
+
+// SAVE TO SUPABASE - SAVES ALL FILES
+async function saveAuth() {
+  try {
+    const files = fs.readdirSync(AUTH_DIR)
+    for (const file of files) {
+      const fullPath = path.join(AUTH_DIR, file)
+      if (fs.statSync(fullPath).isDirectory()) {
+        // Handle subfolders like session, etc
+        const subFiles = fs.readdirSync(fullPath)
+        for (const sub of subFiles) {
+          const subPath = path.join(fullPath, sub)
+          const content = fs.readFileSync(subPath)
+          await supabase.from('nova_auth').upsert({
+            id: `${file}/${sub}`,
+            data: { content: content.toString('base64') }
+          })
+        }
+      } else {
+        const content = fs.readFileSync(fullPath)
+        await supabase.from('nova_auth').upsert({
+          id: file,
+          data: { content: content.toString('base64') }
+        })
+      }
+    }
+    console.log(`Saved auth to Supabase`)
+  } catch (e) {
+    console.log('Save error:', e.message)
+  }
+}
+
+async function startNova() {
+  await restoreAuth()
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
+
+  const sock = makeWASocket({
+    auth: state,
+    logger: pino({ level: 'silent' }), // HIDES Bad MAC spam
+    printQRInTerminal: false,
+    browser: ['Nova Cloud', 'Chrome', '1.0.0'],
+    syncFullHistory: false,
+    markOnlineOnConnect: true,
+    getMessage: async () => undefined
+  })
+
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update
+    if (qr) {
+      qrCodeData = qr
+      console.log('QR READY - OPEN RENDER URL!')
+    }
+    if (connection === 'close') {
+      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
+      console.log('Connection closed, restarting...', lastDisconnect?.error?.message)
+      if (shouldReconnect) {
+        setTimeout(startNova, 2000)
+      } else {
+        console.log('Logged out - clear supabase table')
+      }
+    } else if (connection === 'open') {
+      qrCodeData = null
+      console.log('NOVA ONLINE PERSISTENT 24/7 ✅')
+      await saveAuth()
+    }
+  })
+
+  sock.ev.on('creds.update', async () => {
+    await saveCreds()
+    await saveAuth()
+  })
+
+  // OPTIONAL: Ignore decrypt errors, keep bot alive
+  sock.ev.on('messages.upsert', async (m) => {
+    try {
+      const msg = m.messages[0]
+      if (!msg.message) return
+      console.log('Message from:', msg.key.remoteJid)
+      // Your memory logic here...
+    } catch (e) {
+      // ignore decrypt errors
+    }
+  })
+}
+
+startNova()
