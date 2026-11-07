@@ -5,35 +5,43 @@ const app = express()
 let qrImage = ""
 
 const MEMORY_API = "https://aibridge-api-render-1.onrender.com"
+const API_KEY = process.env.NOVA_API_KEY || process.env.API_KEY || "" // set this in Render env
 
-// --- NOVA MEMORY BRAIN (shared with dashboard) ---
-async function novaRemember(text) {
+// --- NOVA MEMORY BRAIN (matches supabase.sql 6 tables) ---
+async function novaRemember(content) {
   try {
-    await fetch(`${MEMORY_API}/api/`, {
+    if (!API_KEY) return console.log("No API_KEY set in env");
+    await fetch(`${MEMORY_API}/api/memories`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text })
+      headers: { 
+        "Content-Type": "application/json",
+        "x-api-key": API_KEY
+      },
+      body: JSON.stringify({ 
+        content: content, // <-- new table uses `content` not `text`
+        source: "whatsapp",
+        type: "memory",
+        tags: ["nova","whatsapp"]
+      })
     })
-    console.log("Nova remembered:", text)
+    console.log("Nova remembered:", content.slice(0,80))
   } catch (e) {
-    console.log("Nova offline save failed:", e.message)
+    console.log("Nova save failed:", e.message)
   }
 }
 
 async function novaRecall(query = "") {
   try {
-    if (!query) {
-      const r = await fetch(`${MEMORY_API}/api/`)
-      const d = await r.json()
-      return d.memories || []
-    }
-    const res = await fetch(`${MEMORY_API}/api/search`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query })
+    if (!API_KEY) return [];
+    const url = query 
+      ? `${MEMORY_API}/api/memories?q=${encodeURIComponent(query)}`
+      : `${MEMORY_API}/api/memories`
+      
+    const r = await fetch(url, {
+      headers: { "x-api-key": API_KEY }
     })
-    const data = await res.json()
-    return data.results || data.memories || []
+    const d = await r.json()
+    return Array.isArray(d) ? d : []
   } catch (e) {
     console.log("Recall failed:", e.message)
     return []
@@ -54,29 +62,25 @@ async function startBot() {
         }
         if (connection === "open") {
             console.log("🤫 SILENT - NO REPLIES, GROUPS BLOCKED - 24/7 ONLINE!")
-            console.log("🧠 Memory brain connected to", MEMORY_API)
+            console.log("🧠 Memory brain:", MEMORY_API)
             qrImage = ""
-            // Load memories on boot
             const mems = await novaRecall()
             console.log(`Loaded ${mems.length} memories from cloud`)
         }
     })
 
     sock.ev.on("messages.upsert", async (m) => {
-        // SILENT LEARNING - does not reply, just learns
         try {
           const msg = m.messages[0]
           if (!msg.message) return
           const text = msg.message.conversation || msg.message.extendedTextMessage?.text || ""
           if (!text) return
-          if (msg.key.fromMe) return // don't learn own
+          if (msg.key.fromMe) return
           
-          // Learn only DMs, ignore groups (silent mode)
           const isGroup = msg.key.remoteJid.endsWith("@g.us")
           if (isGroup) return
 
-          // Save to shared memory
-          await novaRemember(`WhatsApp: ${text}`)
+          await novaRemember(text)
         } catch (e) {}
     })
 }
@@ -85,20 +89,18 @@ app.get("/", (req, res) => {
     if (qrImage) {
         res.send(`<center><h2>Scan this QR with WhatsApp</h2><img src="${qrImage}" width="300"><br><br><a href="/">Refresh</a></center>`)
     } else {
-        res.send("<center><h2>🤫 NOVA is Online 24/7!</h2><p>🧠 Memory: Connected to AI-Bridge</p><p>If you need QR, restart service in Render</p><p><a href='/memories'>View Memories</a></p></center>`)
+        res.send("<center><h2>🤫 NOVA is Online 24/7!</h2><p>🧠 Memory: Connected to AI-Bridge</p><p>If you need QR, restart service in Render</p><p><a href='/memories'>View Memories</a></p></center>")
     }
 })
 
-// New route: View shared memories
 app.get("/memories", async (req, res) => {
     const mems = await novaRecall()
-    res.json({ count: mems.length, memories: mems.slice(-20).reverse() })
+    res.json({ count: mems.length, memories: mems.slice(0,20) })
 })
 
-// New route: Nova search
 app.get("/nova/search/:q", async (req, res) => {
     const results = await novaRecall(req.params.q)
-    res.json({ query: req.params.q, results })
+    res.json({ query: req.params.q, count: results.length, results })
 })
 
 app.listen(3000, () => console.log("Web server on 3000"))
