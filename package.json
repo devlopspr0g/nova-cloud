@@ -2,10 +2,13 @@
   "name": "nova-cloud",
   "type": "module",
   "main": "bot.js",
-  "scripts": { "start": "npm install qrcode && node bot.js" }
+  "scripts": {
+    "start": "node bot.js"
+  },
   "dependencies": {
     "@whiskeysockets/baileys": "latest",
     "@supabase/supabase-js": "^2.45.0",
+    "qrcode": "^1.5.4",
     "express": "^4.21.1",
     "pino": "^9.6.0"
   }
